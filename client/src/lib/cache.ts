@@ -1,0 +1,12 @@
+import Dexie,{type Table} from "dexie";
+export type ChapterStatus="pending"|"downloading"|"complete"|"error";
+export interface CachedPage{id?:number;chapterKey:string;index:number;sourceUrl:string;blob:Blob;savedAt:number}
+export interface CachedChapter{key:string;sourceUrl:string;title:string;imageUrls:string[];status:ChapterStatus;downloaded:number;total:number;updatedAt:number;error?:string}
+class ComicCache extends Dexie{chapters!:Table<CachedChapter,string>;pages!:Table<CachedPage,number>;constructor(){super("marathon-comic-cache");this.version(1).stores({chapters:"key,sourceUrl,status,updatedAt",pages:"++id,chapterKey,index,sourceUrl,[chapterKey+index]"})}}
+export const comicCache=new ComicCache();export const MAX_CACHED_CHAPTERS=10;
+export async function savePageInOrder(chapter:CachedChapter,index:number,sourceUrl:string,blob:Blob){await comicCache.transaction("rw",comicCache.chapters,comicCache.pages,async()=>{await comicCache.pages.put({chapterKey:chapter.key,index,sourceUrl,blob,savedAt:Date.now()});await comicCache.chapters.update(chapter.key,{downloaded:index+1,updatedAt:Date.now()})})}
+export async function markChapter(chapter:CachedChapter,status:ChapterStatus,error?:string){await comicCache.chapters.put({...chapter,status,error,updatedAt:Date.now()})}
+export async function completeChapter(chapter:CachedChapter){await comicCache.transaction("rw",comicCache.chapters,comicCache.pages,async()=>{const count=await comicCache.pages.where("chapterKey").equals(chapter.key).count();if(count!==chapter.total||count!==chapter.imageUrls.length)throw new Error("Cache tidak lengkap; chapter tidak dapat ditandai complete.");await comicCache.chapters.put({...chapter,status:"complete",downloaded:count,updatedAt:Date.now(),error:undefined});await evictOldChapters(chapter.key)})}
+export async function evictOldChapters(activeKey?:string){const all=await comicCache.chapters.orderBy("updatedAt").toArray();let excess=all.length-MAX_CACHED_CHAPTERS;for(const ch of all){if(excess<=0)break;if(ch.key===activeKey)continue;await comicCache.pages.where("chapterKey").equals(ch.key).delete();await comicCache.chapters.delete(ch.key);excess--}}
+export async function readCachedPages(key:string){const pages=await comicCache.pages.where("chapterKey").equals(key).sortBy("index");await comicCache.chapters.update(key,{updatedAt:Date.now()});return pages}
+export async function checkStorageQuota(){if(!navigator.storage?.estimate)return{};const e=await navigator.storage.estimate();return{usage:e.usage,quota:e.quota}}
